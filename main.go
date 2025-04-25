@@ -647,7 +647,7 @@ func main() {
 		}
 	}()
 
-	// Re-read the takeout archive to get message content
+	// Re-read the takeout archive to upload messages
 	file, err := os.Open(filePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening takeout archive: %v\n", err)
@@ -663,13 +663,9 @@ func main() {
 	defer gzReader.Close()
 
 	tarReader := tar.NewReader(gzReader)
+	messageIndex := 0
 
-	// Create a map to store message content by MessageID
-	messageContentMap := make(map[string]string)
-	var currentMessageID string
-	var currentMessageContent strings.Builder
-
-	// First pass: collect message content
+	// Process each mbox file
 	for {
 		header, err := tarReader.Next()
 		if err == io.EOF {
@@ -684,51 +680,52 @@ func main() {
 			scanner := bufio.NewScanner(tarReader)
 			scanner.Buffer(make([]byte, 50*1024*1024), 100*1024*1024)
 
+			var messageBuilder strings.Builder
+			var inMessage bool
+
 			for scanner.Scan() {
 				line := scanner.Text()
 				if strings.HasPrefix(line, "From ") {
-					// If we were processing a message, save it
-					if currentMessageID != "" && currentMessageContent.Len() > 0 {
-						messageContentMap[currentMessageID] = currentMessageContent.String()
-						currentMessageContent.Reset()
+					// If we were processing a message, upload it
+					if inMessage && messageBuilder.Len() > 0 {
+						if messageIndex < len(threadInfo) {
+							if err := jmapClient.UploadMessage(threadInfo[messageIndex], messageBuilder.String(), mailboxes); err != nil {
+								fmt.Fprintf(os.Stderr, "Error uploading message %s: %v\n", threadInfo[messageIndex].MessageID, err)
+								errorCount++
+							} else {
+								uploadedCount++
+								uploadStats.TotalMessages = uploadedCount
+							}
+							messageIndex++
+						}
+						messageBuilder.Reset()
 					}
-
-					// Parse headers to get MessageID
-					headers, err := ParseMessageHeaders(currentMessageContent.String())
-					if err == nil && headers.MessageID != "" {
-						currentMessageID = headers.MessageID
-					}
+					inMessage = true
+					continue // Skip the From line
 				}
 
-				if currentMessageID != "" {
-					currentMessageContent.WriteString(line)
-					currentMessageContent.WriteString("\r\n")
+				if inMessage {
+					// Handle escaped From lines (lines starting with >From)
+					if strings.HasPrefix(line, ">From ") {
+						line = line[1:] // Remove the '>' prefix
+					}
+					messageBuilder.WriteString(line)
+					messageBuilder.WriteString("\r\n") // Use CRLF for line endings
 				}
 			}
 
-			// Save the last message
-			if currentMessageID != "" && currentMessageContent.Len() > 0 {
-				messageContentMap[currentMessageID] = currentMessageContent.String()
+			// Upload the last message if any
+			if inMessage && messageBuilder.Len() > 0 && messageIndex < len(threadInfo) {
+				if err := jmapClient.UploadMessage(threadInfo[messageIndex], messageBuilder.String(), mailboxes); err != nil {
+					fmt.Fprintf(os.Stderr, "Error uploading message %s: %v\n", threadInfo[messageIndex].MessageID, err)
+					errorCount++
+				} else {
+					uploadedCount++
+					uploadStats.TotalMessages = uploadedCount
+				}
+				messageIndex++
 			}
 		}
-	}
-
-	// Second pass: upload messages
-	for _, info := range threadInfo {
-		messageContent, ok := messageContentMap[info.MessageID]
-		if !ok {
-			fmt.Fprintf(os.Stderr, "Error: Message content not found for %s\n", info.MessageID)
-			errorCount++
-			continue
-		}
-
-		if err := jmapClient.UploadMessage(info, messageContent, mailboxes); err != nil {
-			fmt.Fprintf(os.Stderr, "Error uploading message %s: %v\n", info.MessageID, err)
-			errorCount++
-			continue
-		}
-		uploadedCount++
-		uploadStats.TotalMessages = uploadedCount
 	}
 
 	close(stopProgress)
