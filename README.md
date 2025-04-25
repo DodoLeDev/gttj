@@ -60,6 +60,17 @@ Command line options take precedence over environment variables.
 - Preserves mailbox structure and labels
 - Tracks reply relationships
 
+## Label Mapping
+
+The tool includes a label mapping system to handle Gmail's localized labels. The mapping is defined in `label-map.yaml` and supports:
+
+- Role mappings (e.g., "Gesendet" → "sent", "Posteingang" → "inbox")
+- Keyword mappings (e.g., "Geöffnet" → "$seen", "Wichtig" → "important")
+- Category mappings
+- Ignore lists for labels that should be skipped
+
+The tool automatically detects the locale of your Gmail labels and applies the appropriate mapping. Currently, German (de) and English (en) mappings are included by default. To add support for additional languages, you can extend the `label-map.yaml` file with new locale mappings.
+
 ## Requirements
 
 - Go 1.23 or later
