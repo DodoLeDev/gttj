@@ -11,10 +11,27 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/shirou/gopsutil/v3/mem"
+	"golang.org/x/crypto/ssh/terminal"
 )
+
+// Custom flag type to enforce double-dash format
+type doubleDashFlag struct {
+	value string
+}
+
+func (f *doubleDashFlag) String() string {
+	return f.value
+}
+
+func (f *doubleDashFlag) Set(value string) error {
+	f.value = value
+	return nil
+}
 
 // Regular expression to parse From line
 // Example: From 1829804852868694154@xxx Sat Apr 19 04:44:52 +0000 2025
@@ -475,28 +492,76 @@ func printThreadAnalysis(threadInfo []MessageThreadInfo) {
 }
 
 func main() {
-	// Define command-line flags
-	filePath := flag.String("file", "", "Path to the takeout archive file")
-	debugFlag := flag.Bool("debug", false, "Enable debug mode")
-	limitFlag := flag.Int("limit", 0, "Limit the number of messages to process (0 for no limit)")
-	jmapURL := flag.String("jmap", "", "Base URL of the JMAP server")
-	flag.Parse()
+	// Define command-line flags with short options
+	var filePath, jmapURL, username string
+	var debugFlag bool
+	var limitFlag int
+
+	// Create a new flag set
+	fs := flag.NewFlagSet("gttj", flag.ExitOnError)
+
+	// Define flags with short options
+	fs.StringVar(&filePath, "f", "", "Path to the takeout archive file")
+	fs.BoolVar(&debugFlag, "d", false, "Enable debug mode")
+	fs.IntVar(&limitFlag, "l", 0, "Limit the number of messages to process (0 for no limit)")
+	fs.StringVar(&jmapURL, "j", "", "Base URL of the JMAP server")
+	fs.StringVar(&username, "u", "", "JMAP server username")
+
+	// Parse flags
+	fs.Parse(os.Args[1:])
+
+	// Load environment variables
+	if err := godotenv.Load(); err != nil {
+		// Only show warning if it's not a "file not found" error
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Warning: error loading .env file: %v\n", err)
+		}
+	}
 
 	// Validate required flags
-	if *filePath == "" {
-		fmt.Println("Error: --file flag is required")
-		flag.Usage()
+	if filePath == "" {
+		fmt.Println("Error: -f flag is required")
+		fs.Usage()
 		os.Exit(1)
 	}
 
-	if *jmapURL == "" {
-		fmt.Println("Error: --jmap flag is required")
-		flag.Usage()
-		os.Exit(1)
+	// Get JMAP URL from flag or environment variable
+	jmapServerURL := jmapURL
+	if jmapServerURL == "" {
+		jmapServerURL = os.Getenv("JMAP_URL")
+		if jmapServerURL == "" {
+			fmt.Println("Error: -j flag or JMAP_URL environment variable is required")
+			fs.Usage()
+			os.Exit(1)
+		}
 	}
 
-	debug = *debugFlag
-	messageLimit := *limitFlag
+	// Get username from flag or environment variable
+	jmapUsername := username
+	if jmapUsername == "" {
+		jmapUsername = os.Getenv("JMAP_USERNAME")
+		if jmapUsername == "" {
+			fmt.Println("Error: -u flag or JMAP_USERNAME environment variable is required")
+			fs.Usage()
+			os.Exit(1)
+		}
+	}
+
+	// Get password from environment variable or prompt interactively
+	jmapPassword := os.Getenv("JMAP_PASSWORD")
+	if jmapPassword == "" {
+		fmt.Printf("Enter password for %s at %s: ", jmapUsername, jmapServerURL)
+		passwordBytes, err := terminal.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to read password: %v\n", err)
+			os.Exit(1)
+		}
+		jmapPassword = string(passwordBytes)
+		fmt.Println() // New line after password input
+	}
+
+	debug = debugFlag
+	messageLimit := limitFlag
 	if messageLimit > 0 {
 		fmt.Printf("Processing limited to %d messages\n", messageLimit)
 	}
@@ -518,7 +583,7 @@ func main() {
 		receivedDates = append(receivedDates, receivedDate)
 		return nil
 	}
-	totalMessages, err := processTakeoutArchive(*filePath, readHeaders, messageLimit)
+	totalMessages, err := processTakeoutArchive(filePath, readHeaders, messageLimit)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -544,7 +609,7 @@ func main() {
 
 	// Initialize JMAP client
 	fmt.Println("\nInitializing JMAP client...")
-	jmapClient, err := NewJMAPClient(*jmapURL)
+	jmapClient, err := NewJMAPClient(jmapServerURL, jmapUsername, jmapPassword)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing JMAP client: %v\n", err)
 		os.Exit(1)

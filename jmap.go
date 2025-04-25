@@ -6,11 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
-
-	"github.com/joho/godotenv"
 )
 
 // JMAPClient represents a JMAP client
@@ -56,18 +53,7 @@ type JMAPMailbox struct {
 }
 
 // NewJMAPClient creates a new JMAP client
-func NewJMAPClient(baseURL string) (*JMAPClient, error) {
-	// Load environment variables
-	if err := godotenv.Load(); err != nil {
-		return nil, fmt.Errorf("error loading .env file: %w", err)
-	}
-
-	username := os.Getenv("JMAP_USERNAME")
-	password := os.Getenv("JMAP_PASSWORD")
-	if username == "" || password == "" {
-		return nil, fmt.Errorf("JMAP_USERNAME and JMAP_PASSWORD must be set in .env file")
-	}
-
+func NewJMAPClient(baseURL string, username string, password string) (*JMAPClient, error) {
 	client := &JMAPClient{
 		baseURL:    baseURL,
 		username:   username,
