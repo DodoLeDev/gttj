@@ -1,0 +1,32 @@
+mappings:
+  - locale: de
+    roles:
+      Gesendet: sent
+      Entwürfe: drafts
+      Archiviert: archive
+      Spam: junk
+      Papierkorb: trash
+      Posteingang: inbox
+
+    keywords:
+      Geöffnet: $seen
+      Wichtig: important
+
+    ignore:
+      - Ungelesen
+
+  - locale: en
+    roles:
+      Sent: sent
+      Drafts: drafts
+      Archived: archive
+      Spam: junk
+      Trash: trash
+      Inbox: inbox
+
+    keywords:
+      Read: $seen
+      Important: important
+
+    ignore:
+      - Unread
