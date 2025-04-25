@@ -647,8 +647,82 @@ func main() {
 		}
 	}()
 
-	for i, info := range threadInfo {
-		if err := jmapClient.UploadMessage(info, messageHeaders[i].RawContent, mailboxes); err != nil {
+	// Re-read the takeout archive to get message content
+	file, err := os.Open(filePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening takeout archive: %v\n", err)
+		os.Exit(1)
+	}
+	defer file.Close()
+
+	gzReader, err := gzip.NewReader(file)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating gzip reader: %v\n", err)
+		os.Exit(1)
+	}
+	defer gzReader.Close()
+
+	tarReader := tar.NewReader(gzReader)
+
+	// Create a map to store message content by MessageID
+	messageContentMap := make(map[string]string)
+	var currentMessageID string
+	var currentMessageContent strings.Builder
+
+	// First pass: collect message content
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading tar entry: %v\n", err)
+			os.Exit(1)
+		}
+
+		if filepath.Ext(header.Name) == ".mbox" {
+			scanner := bufio.NewScanner(tarReader)
+			scanner.Buffer(make([]byte, 50*1024*1024), 100*1024*1024)
+
+			for scanner.Scan() {
+				line := scanner.Text()
+				if strings.HasPrefix(line, "From ") {
+					// If we were processing a message, save it
+					if currentMessageID != "" && currentMessageContent.Len() > 0 {
+						messageContentMap[currentMessageID] = currentMessageContent.String()
+						currentMessageContent.Reset()
+					}
+
+					// Parse headers to get MessageID
+					headers, err := ParseMessageHeaders(currentMessageContent.String())
+					if err == nil && headers.MessageID != "" {
+						currentMessageID = headers.MessageID
+					}
+				}
+
+				if currentMessageID != "" {
+					currentMessageContent.WriteString(line)
+					currentMessageContent.WriteString("\r\n")
+				}
+			}
+
+			// Save the last message
+			if currentMessageID != "" && currentMessageContent.Len() > 0 {
+				messageContentMap[currentMessageID] = currentMessageContent.String()
+			}
+		}
+	}
+
+	// Second pass: upload messages
+	for _, info := range threadInfo {
+		messageContent, ok := messageContentMap[info.MessageID]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "Error: Message content not found for %s\n", info.MessageID)
+			errorCount++
+			continue
+		}
+
+		if err := jmapClient.UploadMessage(info, messageContent, mailboxes); err != nil {
 			fmt.Fprintf(os.Stderr, "Error uploading message %s: %v\n", info.MessageID, err)
 			errorCount++
 			continue

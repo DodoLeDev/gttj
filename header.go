@@ -16,7 +16,6 @@ type MessageHeaders struct {
 	InReplyTo     string
 	GmailLabels   []string
 	GmailThreadID string
-	RawContent    string // Store the original message content
 }
 
 // parseHeader parses a single header line, handling continuation lines
@@ -75,9 +74,7 @@ func parseHeader(scanner *bufio.Scanner) ([]struct{ Key, Value string }, error) 
 
 // ParseMessageHeaders parses the headers of a message and returns the relevant information
 func ParseMessageHeaders(message string) (*MessageHeaders, error) {
-	headers := &MessageHeaders{
-		RawContent: message, // Store the original message content
-	}
+	headers := &MessageHeaders{}
 
 	// Create a scanner that splits on CRLF
 	scanner := bufio.NewScanner(strings.NewReader(message))
