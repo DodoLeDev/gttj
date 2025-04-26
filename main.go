@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"bufio"
 	"compress/gzip"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/shirou/gopsutil/v3/mem"
+	"github.com/speedata/optionparser"
 	"golang.org/x/crypto/ssh/terminal"
 )
 
@@ -23,7 +23,15 @@ import (
 // Example: From 1829804852868694154@xxx Sat Apr 19 04:44:52 +0000 2025
 var fromLineRegex = regexp.MustCompile(`From \d+@\S+ (\w+) (\w+) (\d+) (\d+:\d+:\d+) \+0000 (\d{4})`)
 
-var debug bool
+// Parameters holds all program parameters
+type Parameters struct {
+	Debug        bool
+	MessageLimit int
+	JMAPURL      string
+	Username     string
+	Password     string
+	FilePath     string
+}
 
 type ProcessingStats struct {
 	TotalMessages int
@@ -48,7 +56,7 @@ func (s *ProcessingStats) Update() {
 		s.TotalMessages, rate, heapInUse, rssTotal)
 }
 
-func processMboxStream(reader io.Reader, stats *ProcessingStats, processEntity func(time.Time, string) error, messageLimit int) error {
+func processMboxStream(reader io.Reader, stats *ProcessingStats, processEntity func(time.Time, string) error, messageLimit int, debug bool) error {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 50*1024*1024), 100*1024*1024) // 1MB initial size, 10MB max size
 
@@ -96,14 +104,16 @@ func processMboxStream(reader io.Reader, stats *ProcessingStats, processEntity f
 				// matches[5] = year
 				dateStr := fmt.Sprintf("%s %s %s %s %s +0000",
 					matches[1], matches[2], matches[3], matches[4], matches[5])
-				debugLog("Parsing date: %s", dateStr)
+				if debug {
+					fmt.Printf("Parsing date: %s\n", dateStr)
+				}
 				var err error
 				currentDate, err = time.Parse("Mon Jan 2 15:04:05 2006 +0000", dateStr)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "\nError parsing date: %s\n", dateStr)
 					currentDate = time.Time{}
-				} else {
-					debugLog("Successfully parsed date: %s", currentDate.Format(time.RFC3339))
+				} else if debug {
+					fmt.Printf("Successfully parsed date: %s\n", currentDate.Format(time.RFC3339))
 				}
 			} else {
 				fmt.Fprintf(os.Stderr, "\nCould not parse From line: %s\n", line)
@@ -140,8 +150,8 @@ func processMboxStream(reader io.Reader, stats *ProcessingStats, processEntity f
 	return nil
 }
 
-func processTakeoutArchive(filePath string, processEntity func(time.Time, string) error, messageLimit int) (int, error) {
-	file, err := os.Open(filePath)
+func processTakeoutArchive(params *Parameters, processEntity func(time.Time, string) error) (int, error) {
+	file, err := os.Open(params.FilePath)
 	if err != nil {
 		return 0, fmt.Errorf("failed to open file: %w", err)
 	}
@@ -182,12 +192,12 @@ func processTakeoutArchive(filePath string, processEntity func(time.Time, string
 		}
 
 		if filepath.Ext(header.Name) == ".mbox" {
-			if err := processMboxStream(tarReader, stats, processEntity, messageLimit); err != nil {
+			if err := processMboxStream(tarReader, stats, processEntity, params.MessageLimit, params.Debug); err != nil {
 				close(stopProgress)
 				return 0, fmt.Errorf("failed processing %s: %w", header.Name, err)
 			}
 			// Check if we've hit the message limit
-			if messageLimit > 0 && stats.TotalMessages >= messageLimit {
+			if params.MessageLimit > 0 && stats.TotalMessages >= params.MessageLimit {
 				close(stopProgress)
 				return stats.TotalMessages, nil
 			}
@@ -199,7 +209,7 @@ func processTakeoutArchive(filePath string, processEntity func(time.Time, string
 	return stats.TotalMessages, nil
 }
 
-func matchLocale(messageHeaders []*MessageHeaders) LabelMapping {
+func matchLocale(messageHeaders []*MessageHeaders, debug bool) LabelMapping {
 	// Analyze Gmail labels to determine locale
 	fmt.Println("\nAnalyzing Gmail labels to determine locale...")
 	labelCounts := make(map[string]int)
@@ -210,7 +220,7 @@ func matchLocale(messageHeaders []*MessageHeaders) LabelMapping {
 	}
 
 	// Read the label map
-	labelMap, err := ReadLabelMap("label-map.yaml")
+	labelMap, err := ReadLabelMap("label-map.yaml", debug)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading label map: %v\n", err)
 		os.Exit(1)
@@ -265,7 +275,7 @@ type MessageThreadInfo struct {
 }
 
 // analyzeMessageThreads analyzes the message headers to determine thread relationships and reply status
-func analyzeMessageThreads(headers []*MessageHeaders) []MessageThreadInfo {
+func analyzeMessageThreads(headers []*MessageHeaders, debug bool) []MessageThreadInfo {
 	// Create a map to track which messages have been replied to
 	repliedToMap := make(map[string][]string)
 
@@ -287,12 +297,12 @@ func analyzeMessageThreads(headers []*MessageHeaders) []MessageThreadInfo {
 	}
 
 	// Get the label map and detect locale
-	labelMap, err := ReadLabelMap("label-map.yaml")
+	labelMap, err := ReadLabelMap("label-map.yaml", debug)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading label map: %v\n", err)
 		os.Exit(1)
 	}
-	localeMap := matchLocale(headers)
+	localeMap := matchLocale(headers, debug)
 	locale := localeMap.Locale
 
 	// Second pass: create thread info for each message
@@ -454,29 +464,11 @@ func printThreadAnalysis(threadInfo []MessageThreadInfo) {
 	fmt.Printf("\nMessages with replies: %d out of %d messages\n", repliedCount, len(threadInfo))
 }
 
-func main() {
-	// Define command-line flags with short options
-	var filePath, jmapURL, username string
-	var debugFlag bool
-	var limitFlag int
+// getParameters processes environment variables and command line options
+func getParameters() (*Parameters, error) {
+	params := &Parameters{}
 
-	// Create a new flag set
-	fs := flag.NewFlagSet("gttj", flag.ExitOnError)
-
-	// Define flags with short options
-	fs.StringVar(&filePath, "f", "", "Path to the takeout archive file")
-	fs.BoolVar(&debugFlag, "d", false, "Enable debug mode")
-	fs.IntVar(&limitFlag, "l", 0, "Limit the number of messages to process (0 for no limit)")
-	fs.StringVar(&jmapURL, "j", "", "Base URL of the JMAP server")
-	fs.StringVar(&username, "u", "", "JMAP server username")
-
-	// Parse flags
-	err := fs.Parse(os.Args[1:])
-	if err != nil {
-		return
-	}
-
-	// Load environment variables
+	// Load environment variables first
 	if err := godotenv.Load(); err != nil {
 		// Only show warning if it's not a "file not found" error
 		if !os.IsNotExist(err) {
@@ -484,52 +476,78 @@ func main() {
 		}
 	}
 
-	// Validate required flags
-	if filePath == "" {
-		fmt.Println("Error: -f flag is required")
-		fs.Usage()
-		os.Exit(1)
+	// Initialize parameters from environment variables
+	params.JMAPURL = os.Getenv("JMAP_URL")
+	params.Username = os.Getenv("JMAP_USERNAME")
+	params.Password = os.Getenv("JMAP_PASSWORD")
+
+	// Define command-line options
+	var limitStr string
+	op := optionparser.NewOptionParser()
+	op.On("-d", "--debug", "Enable debug mode", &params.Debug)
+	op.On("-l", "--limit LIMIT", "Limit the number of messages to process", &limitStr)
+	op.On("-j", "--jmap-url URL", "Base URL of the JMAP server", &params.JMAPURL)
+	op.On("-u", "--username USERNAME", "JMAP server username", &params.Username)
+
+	// Parse command line arguments
+	err := op.Parse()
+	if err != nil {
+		return nil, fmt.Errorf("error parsing options: %w", err)
 	}
 
-	// Get JMAP URL from flag or environment variable
-	jmapServerURL := jmapURL
-	if jmapServerURL == "" {
-		jmapServerURL = os.Getenv("JMAP_URL")
-		if jmapServerURL == "" {
-			fmt.Println("Error: -j flag or JMAP_URL environment variable is required")
-			fs.Usage()
-			os.Exit(1)
+	// Convert limit string to integer if provided
+	if limitStr != "" {
+		limit, err := fmt.Sscanf(limitStr, "%d", &params.MessageLimit)
+		if err != nil || limit != 1 {
+			return nil, fmt.Errorf("invalid limit value: %s", limitStr)
 		}
 	}
 
-	// Get username from flag or environment variable
-	jmapUsername := username
-	if jmapUsername == "" {
-		jmapUsername = os.Getenv("JMAP_USERNAME")
-		if jmapUsername == "" {
-			fmt.Println("Error: -u flag or JMAP_USERNAME environment variable is required")
-			fs.Usage()
-			os.Exit(1)
-		}
+	// Check for the correct number of non-option arguments
+	if len(op.Extra) != 1 {
+		return nil, fmt.Errorf("requires exactly one non-option argument (path to the takeout archive file)")
+	}
+
+	// Get the file path from the non-option arguments
+	params.FilePath = op.Extra[0]
+
+	// Validate required arguments
+	if params.FilePath == "" {
+		return nil, fmt.Errorf("path to the takeout archive file is required")
+	}
+
+	// Validate required JMAP parameters
+	if params.JMAPURL == "" {
+		return nil, fmt.Errorf("-j/--jmap-url option or JMAP_URL environment variable is required")
+	}
+
+	if params.Username == "" {
+		return nil, fmt.Errorf("-u/--username option or JMAP_USERNAME environment variable is required")
 	}
 
 	// Get password from environment variable or prompt interactively
-	jmapPassword := os.Getenv("JMAP_PASSWORD")
-	if jmapPassword == "" {
-		fmt.Printf("Enter password for %s at %s: ", jmapUsername, jmapServerURL)
+	if params.Password == "" {
+		fmt.Printf("Enter password for %s at %s: ", params.Username, params.JMAPURL)
 		passwordBytes, err := terminal.ReadPassword(int(syscall.Stdin))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: failed to read password: %v\n", err)
-			os.Exit(1)
+			return nil, fmt.Errorf("failed to read password: %w", err)
 		}
-		jmapPassword = string(passwordBytes)
+		params.Password = string(passwordBytes)
 		fmt.Println() // New line after password input
 	}
 
-	debug = debugFlag
-	messageLimit := limitFlag
-	if messageLimit > 0 {
-		fmt.Printf("Processing limited to %d messages\n", messageLimit)
+	return params, nil
+}
+
+func main() {
+	params, err := getParameters()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if params.MessageLimit > 0 {
+		fmt.Printf("Processing limited to %d messages\n", params.MessageLimit)
 	}
 
 	startTime := time.Now()
@@ -540,7 +558,7 @@ func main() {
 
 	fmt.Println("Starting first pass: parsing message headers...")
 	readHeaders := func(receivedDate time.Time, message string) error {
-		headers, err := ParseMessageHeaders(message)
+		headers, err := ParseMessageHeaders(message, params.Debug)
 		if err != nil {
 			return fmt.Errorf("failed to parse headers: %w", err)
 		}
@@ -549,7 +567,7 @@ func main() {
 		receivedDates = append(receivedDates, receivedDate)
 		return nil
 	}
-	totalMessages, err := processTakeoutArchive(filePath, readHeaders, messageLimit)
+	totalMessages, err := processTakeoutArchive(params, readHeaders)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -559,23 +577,25 @@ func main() {
 	printProcessingStats(totalMessages, messageHeaders, time.Since(startTime))
 
 	// Analyze locale and print result
-	localeMap := matchLocale(messageHeaders)
+	localeMap := matchLocale(messageHeaders, params.Debug)
 	fmt.Printf("Detected locale: %s\n", localeMap.Locale)
 
 	// Analyze and print thread information
-	threadInfo := analyzeMessageThreads(messageHeaders)
+	threadInfo := analyzeMessageThreads(messageHeaders, params.Debug)
 
 	// Set the received dates in the thread info
 	for i := range threadInfo {
 		threadInfo[i].ReceivedAt = receivedDates[i]
-		debugLog("Setting received date for message %s: %s", threadInfo[i].MessageID, receivedDates[i].Format(time.RFC3339))
+		if params.Debug {
+			fmt.Printf("Setting received date for message %s: %s\n", threadInfo[i].MessageID, receivedDates[i].Format(time.RFC3339))
+		}
 	}
 
 	printThreadAnalysis(threadInfo)
 
 	// Initialize JMAP client
 	fmt.Println("\nInitializing JMAP client...")
-	jmapClient, err := NewJMAPClient(jmapServerURL, jmapUsername, jmapPassword)
+	jmapClient, err := NewJMAPClient(params.JMAPURL, params.Username, params.Password, params.Debug)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing JMAP client: %v\n", err)
 		os.Exit(1)
@@ -613,30 +633,10 @@ func main() {
 		}
 	}()
 
-	// Re-read the takeout archive to upload messages
-	file, err := os.Open(filePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening takeout archive: %v\n", err)
-		os.Exit(1)
-	}
-	defer file.Close()
-
-	gzReader, err := gzip.NewReader(file)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating gzip reader: %v\n", err)
-		os.Exit(1)
-	}
-	defer gzReader.Close()
-
-	tarReader := tar.NewReader(gzReader)
 	messageIndex := 0
-
-	var messageBuilder strings.Builder
-
-	// Local function to handle message upload
-	uploadMessage := func(messageContent string) {
-		if messageBuilder.Len() > 0 && messageIndex < len(threadInfo) {
-			if err := jmapClient.UploadMessage(threadInfo[messageIndex], messageContent, mailboxes); err != nil {
+	uploadMessage := func(receivedDate time.Time, message string) error {
+		if messageIndex < len(threadInfo) {
+			if err := jmapClient.UploadMessage(threadInfo[messageIndex], message, mailboxes); err != nil {
 				fmt.Fprintf(os.Stderr, "Error uploading message %s: %v\n", threadInfo[messageIndex].MessageID, err)
 				errorCount++
 			} else {
@@ -645,46 +645,21 @@ func main() {
 			}
 			messageIndex++
 		}
+		return nil
 	}
 
-	// Process each mbox file
-	for {
-		header, err := tarReader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading tar entry: %v\n", err)
-			os.Exit(1)
-		}
-
-		if filepath.Ext(header.Name) == ".mbox" {
-			scanner := bufio.NewScanner(tarReader)
-			scanner.Buffer(make([]byte, 50*1024*1024), 100*1024*1024)
-
-			for scanner.Scan() {
-				line := scanner.Text()
-				if strings.HasPrefix(line, "From ") {
-					// Upload previous message if any
-					uploadMessage(messageBuilder.String())
-					messageBuilder.Reset()
-					continue // Skip the From line
-				}
-
-				// Handle escaped From lines (lines starting with >From)
-				if strings.HasPrefix(line, ">From ") {
-					line = line[1:] // Remove the '>' prefix
-				}
-				messageBuilder.WriteString(line)
-				messageBuilder.WriteString("\r\n") // Use CRLF for line endings
-			}
-
-			// Upload the last message if any
-			uploadMessage(messageBuilder.String())
-		}
+	// Process the archive again for uploading
+	totalMessages, err = processTakeoutArchive(params, uploadMessage)
+	if err != nil {
+		close(stopProgress) // Ensure we stop the progress reporting on error
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 
+	// Stop progress reporting and wait a moment for it to finish
 	close(stopProgress)
+	time.Sleep(100 * time.Millisecond) // Give the goroutine time to clean up
+
 	uploadElapsed := time.Since(uploadStart)
 	fmt.Printf("\nUpload complete:\n")
 	fmt.Printf("Successfully uploaded: %d messages\n", uploadedCount)

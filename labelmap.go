@@ -10,6 +10,7 @@ import (
 // LabelMap represents the structure of the label-map.yaml file
 type LabelMap struct {
 	Mappings []LabelMapping `yaml:"mappings"`
+	debug    bool
 }
 
 // LabelMapping represents a single locale mapping in the label-map.yaml file
@@ -22,7 +23,7 @@ type LabelMapping struct {
 }
 
 // ReadLabelMap reads and parses the label-map.yaml file
-func ReadLabelMap(filePath string) (*LabelMap, error) {
+func ReadLabelMap(filePath string, debug bool) (*LabelMap, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read label map file: %w", err)
@@ -33,6 +34,7 @@ func ReadLabelMap(filePath string) (*LabelMap, error) {
 		return nil, fmt.Errorf("failed to parse label map file: %w", err)
 	}
 
+	labelMap.debug = debug
 	return &labelMap, nil
 }
 
@@ -46,6 +48,13 @@ func (lm *LabelMap) GetMappingByLocale(locale string) *LabelMapping {
 	return nil
 }
 
+// debugLog logs a message if debug mode is enabled
+func (lm *LabelMap) debugLog(format string, args ...interface{}) {
+	if lm.debug {
+		fmt.Printf("[DEBUG] "+format+"\n", args...)
+	}
+}
+
 // MapLabel maps a Gmail label to its JMAP equivalent based on the locale
 // Returns the mapped label, whether it was mapped, and whether it's a role mapping
 func (lm *LabelMap) MapLabel(locale, label string) (string, bool, bool) {
@@ -57,29 +66,29 @@ func (lm *LabelMap) MapLabel(locale, label string) (string, bool, bool) {
 	// Check if the label is in the ignore list
 	for _, ignored := range mapping.Ignore {
 		if ignored == label {
-			debugLog("Ignoring label: %s", label)
+			lm.debugLog("Ignoring label: %s", label)
 			return "", false, false
 		}
 	}
 
 	// Check roles
 	if mapped, ok := mapping.Roles[label]; ok {
-		debugLog("Mapped role label: %s -> %s", label, mapped)
+		lm.debugLog("Mapped role label: %s -> %s", label, mapped)
 		return mapped, true, true
 	}
 
 	// Check keywords
 	if mapped, ok := mapping.Keywords[label]; ok {
-		debugLog("Mapped keyword label: %s -> %s", label, mapped)
+		lm.debugLog("Mapped keyword label: %s -> %s", label, mapped)
 		return mapped, true, false
 	}
 
 	// Check categories
 	if mapped, ok := mapping.Categories[label]; ok {
-		debugLog("Mapped category label: %s -> %s", label, mapped)
+		lm.debugLog("Mapped category label: %s -> %s", label, mapped)
 		return mapped, true, false
 	}
 
-	debugLog("No mapping found for label: %s", label)
+	lm.debugLog("No mapping found for label: %s", label)
 	return "", false, false
 }

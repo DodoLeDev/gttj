@@ -21,6 +21,7 @@ type JMAPClient struct {
 	password    string
 	httpClient  *http.Client
 	session     *JMAPSession
+	debug       bool
 }
 
 // JMAPSession represents a JMAP session
@@ -53,12 +54,13 @@ type JMAPMailbox struct {
 }
 
 // NewJMAPClient creates a new JMAP client
-func NewJMAPClient(baseURL string, username string, password string) (*JMAPClient, error) {
+func NewJMAPClient(baseURL string, username string, password string, debug bool) (*JMAPClient, error) {
 	client := &JMAPClient{
 		baseURL:    baseURL,
 		username:   username,
 		password:   password,
 		httpClient: &http.Client{},
+		debug:      debug,
 	}
 
 	// Discover JMAP endpoints and session
@@ -70,17 +72,17 @@ func NewJMAPClient(baseURL string, username string, password string) (*JMAPClien
 }
 
 // debugLog logs a message if debug mode is enabled
-func debugLog(format string, args ...interface{}) {
-	if debug {
+func (c *JMAPClient) debugLog(format string, args ...interface{}) {
+	if c.debug {
 		fmt.Printf("[DEBUG] "+format+"\n", args...)
 	}
 }
 
 // doJMAPRequest performs a JMAP HTTP request with detailed logging
 func (c *JMAPClient) doJMAPRequest(method, url string, body []byte, contentType string) ([]byte, error) {
-	debugLog("JMAP Request:\n  Method: %s\n  URL: %s\n  Content-Type: %s", method, url, contentType)
+	c.debugLog("JMAP Request:\n  Method: %s\n  URL: %s\n  Content-Type: %s", method, url, contentType)
 	if body != nil {
-		debugLog("  Request Body:\n%s", string(body))
+		c.debugLog("  Request Body:\n%s", string(body))
 	}
 
 	req, err := http.NewRequest(method, url, bytes.NewReader(body))
@@ -104,7 +106,7 @@ func (c *JMAPClient) doJMAPRequest(method, url string, body []byte, contentType 
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	debugLog("JMAP Response:\n  Status: %d\n  Response Body:\n%s", resp.StatusCode, string(respBody))
+	c.debugLog("JMAP Response:\n  Status: %d\n  Response Body:\n%s", resp.StatusCode, string(respBody))
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("request returned status %d: %s", resp.StatusCode, string(respBody))
@@ -116,7 +118,7 @@ func (c *JMAPClient) doJMAPRequest(method, url string, body []byte, contentType 
 // discoverEndpoints discovers JMAP endpoints using the well-known URL
 func (c *JMAPClient) discoverEndpoints() error {
 	wellKnownURL := fmt.Sprintf("%s/.well-known/jmap", c.baseURL)
-	debugLog("Discovering JMAP endpoints from: %s", wellKnownURL)
+	c.debugLog("Discovering JMAP endpoints from: %s", wellKnownURL)
 
 	respBody, err := c.doJMAPRequest("GET", wellKnownURL, nil, "")
 	if err != nil {
@@ -139,7 +141,7 @@ func (c *JMAPClient) discoverEndpoints() error {
 		return fmt.Errorf("failed to decode discovery response: %w", err)
 	}
 
-	debugLog("Discovered JMAP endpoints:\n  API URL: %s\n  Upload URL: %s\n  Download URL: %s\n  Auth URL: %s",
+	c.debugLog("Discovered JMAP endpoints:\n  API URL: %s\n  Upload URL: %s\n  Download URL: %s\n  Auth URL: %s",
 		discovery.APIURL, discovery.UploadURL, discovery.DownloadURL, discovery.AuthURL)
 
 	c.apiURL = discovery.APIURL
@@ -165,7 +167,7 @@ func (c *JMAPClient) discoverEndpoints() error {
 		for id, account := range c.session.Accounts {
 			if caps, ok := account.AccountCapabilities["urn:ietf:params:jmap:mail"]; ok && caps != nil {
 				c.session.PrimaryAccounts["urn:ietf:params:jmap:mail"] = id
-				debugLog("Using account %s as primary mail account", id)
+				c.debugLog("Using account %s as primary mail account", id)
 				break
 			}
 		}
@@ -176,13 +178,13 @@ func (c *JMAPClient) discoverEndpoints() error {
 		return fmt.Errorf("no mail-capable account found")
 	}
 
-	debugLog("Got JMAP session with primary account: %s", c.session.PrimaryAccounts["urn:ietf:params:jmap:mail"])
+	c.debugLog("Got JMAP session with primary account: %s", c.session.PrimaryAccounts["urn:ietf:params:jmap:mail"])
 	return nil
 }
 
 // GetMailboxes gets the list of mailboxes from the JMAP server
 func (c *JMAPClient) GetMailboxes() (map[string]JMAPMailbox, error) {
-	debugLog("Getting mailboxes from JMAP server")
+	c.debugLog("Getting mailboxes from JMAP server")
 
 	reqBody := struct {
 		Using       []string        `json:"using"`
@@ -240,7 +242,7 @@ func (c *JMAPClient) GetMailboxes() (map[string]JMAPMailbox, error) {
 								mb.ParentID = parentID
 							}
 							mailboxes[mb.Name] = mb
-							debugLog("Found mailbox: %s (ID: %s, Role: %s)", mb.Name, mb.ID, mb.Role)
+							c.debugLog("Found mailbox: %s (ID: %s, Role: %s)", mb.Name, mb.ID, mb.Role)
 						}
 					}
 				}
@@ -255,11 +257,11 @@ func (c *JMAPClient) GetMailboxes() (map[string]JMAPMailbox, error) {
 func (c *JMAPClient) UploadMessage(threadInfo MessageThreadInfo, messageContent string, mailboxes map[string]JMAPMailbox) error {
 	// Clean up messageId by removing any whitespace
 	messageId := strings.TrimSpace(threadInfo.MessageID)
-	debugLog("Processing message ID: %s", messageId)
+	c.debugLog("Processing message ID: %s", messageId)
 
 	// First, upload the message content
 	uploadURL := strings.Replace(c.uploadURL, "{accountId}", c.session.PrimaryAccounts["urn:ietf:params:jmap:mail"], 1)
-	debugLog("Uploading message to: %s", uploadURL)
+	c.debugLog("Uploading message to: %s", uploadURL)
 
 	// Upload the complete RFC822 message as-is
 	respBody, err := c.doJMAPRequest("POST", uploadURL, []byte(messageContent), "message/rfc822")
@@ -274,7 +276,7 @@ func (c *JMAPClient) UploadMessage(threadInfo MessageThreadInfo, messageContent 
 		return fmt.Errorf("failed to decode upload response: %w", err)
 	}
 
-	debugLog("Successfully uploaded message, got blobId: %s", uploadResult.BlobID)
+	c.debugLog("Successfully uploaded message, got blobId: %s", uploadResult.BlobID)
 
 	// Find the correct mailbox ID
 	mailboxID := ""
@@ -365,7 +367,7 @@ func (c *JMAPClient) UploadMessage(threadInfo MessageThreadInfo, messageContent 
 				// Check if the message was created
 				if created, ok := importResult["created"].(map[string]interface{}); ok {
 					if _, ok := created[uploadResult.BlobID]; ok {
-						debugLog("Message %s was imported successfully", messageId)
+						c.debugLog("Message %s was imported successfully", messageId)
 						return nil
 					}
 				}
@@ -378,7 +380,7 @@ func (c *JMAPClient) UploadMessage(threadInfo MessageThreadInfo, messageContent 
 
 // CreateMailbox creates a new mailbox in the JMAP server
 func (c *JMAPClient) CreateMailbox(name, role string) (*JMAPMailbox, error) {
-	debugLog("Creating mailbox: %s (role: %s)", name, role)
+	c.debugLog("Creating mailbox: %s (role: %s)", name, role)
 
 	// Convert empty role to null for JSON
 	var roleValue interface{} = role
@@ -413,7 +415,7 @@ func (c *JMAPClient) CreateMailbox(name, role string) (*JMAPMailbox, error) {
 		return nil, fmt.Errorf("failed to marshal mailbox creation request: %w", err)
 	}
 
-	debugLog("Mailbox creation request body: %s", string(reqBodyBytes))
+	c.debugLog("Mailbox creation request body: %s", string(reqBodyBytes))
 
 	req, err := http.NewRequest("POST", c.apiURL, bytes.NewReader(reqBodyBytes))
 	if err != nil {
@@ -423,7 +425,7 @@ func (c *JMAPClient) CreateMailbox(name, role string) (*JMAPMailbox, error) {
 	req.SetBasicAuth(c.username, c.password)
 	req.Header.Set("Content-Type", "application/json")
 
-	debugLog("Sending mailbox creation request")
+	c.debugLog("Sending mailbox creation request")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create mailbox: %w", err)
@@ -432,12 +434,12 @@ func (c *JMAPClient) CreateMailbox(name, role string) (*JMAPMailbox, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		debugLog("Mailbox creation failed with status %d: %s", resp.StatusCode, string(body))
+		c.debugLog("Mailbox creation failed with status %d: %s", resp.StatusCode, string(body))
 		return nil, fmt.Errorf("mailbox creation returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	body, _ := io.ReadAll(resp.Body)
-	debugLog("Mailbox creation response: %s", string(body))
+	c.debugLog("Mailbox creation response: %s", string(body))
 
 	var result struct {
 		MethodResponses [][]interface{} `json:"methodResponses"`
@@ -454,7 +456,7 @@ func (c *JMAPClient) CreateMailbox(name, role string) (*JMAPMailbox, error) {
 				if createdData, ok := created["created"].(map[string]interface{}); ok {
 					if newMailbox, ok := createdData["new"].(map[string]interface{}); ok {
 						if id, ok := newMailbox["id"].(string); ok {
-							debugLog("Successfully created mailbox: %s (ID: %s)", name, id)
+							c.debugLog("Successfully created mailbox: %s (ID: %s)", name, id)
 							return &JMAPMailbox{
 								ID:   id,
 								Name: name,

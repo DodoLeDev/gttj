@@ -73,7 +73,7 @@ func parseHeader(scanner *bufio.Scanner) ([]struct{ Key, Value string }, error) 
 }
 
 // ParseMessageHeaders parses the headers of a message and returns the relevant information
-func ParseMessageHeaders(message string) (*MessageHeaders, error) {
+func ParseMessageHeaders(message string, debug bool) (*MessageHeaders, error) {
 	headers := &MessageHeaders{}
 
 	// Create a scanner that splits on CRLF
