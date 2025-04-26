@@ -304,8 +304,15 @@ func (c *JMAPClient) UploadMessage(threadInfo MessageThreadInfo, messageContent 
 	mailboxIds := make(map[string]bool)
 	mailboxIds[mailboxID] = true
 
-	// We no longer add category mailboxes here since the mailbox assignment
-	// is already determined in analyzeMessageThreads
+	// Create keywords map
+	keywordMap := make(map[string]bool)
+	for _, keyword := range threadInfo.Keywords {
+		keywordMap[keyword] = true
+	}
+	// Add $replied keyword if the message has been replied to
+	if threadInfo.IsRepliedTo {
+		keywordMap["$replied"] = true
+	}
 
 	emailReq := struct {
 		Using       []string        `json:"using"`
@@ -321,13 +328,7 @@ func (c *JMAPClient) UploadMessage(threadInfo MessageThreadInfo, messageContent 
 						uploadResult.BlobID: map[string]interface{}{
 							"blobId":     uploadResult.BlobID,
 							"mailboxIds": mailboxIds,
-							"keywords": func() map[string]bool {
-								keywordMap := make(map[string]bool)
-								for _, keyword := range threadInfo.Keywords {
-									keywordMap[keyword] = true
-								}
-								return keywordMap
-							}(),
+							"keywords":   keywordMap,
 							"messageId":  messageId,
 							"parse":      true,
 							"receivedAt": threadInfo.ReceivedAt.Format(time.RFC3339),
