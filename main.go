@@ -19,20 +19,6 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 )
 
-// Custom flag type to enforce double-dash format
-type doubleDashFlag struct {
-	value string
-}
-
-func (f *doubleDashFlag) String() string {
-	return f.value
-}
-
-func (f *doubleDashFlag) Set(value string) error {
-	f.value = value
-	return nil
-}
-
 // Regular expression to parse From line
 // Example: From 1829804852868694154@xxx Sat Apr 19 04:44:52 +0000 2025
 var fromLineRegex = regexp.MustCompile(`From \d+@\S+ (\w+) (\w+) (\d+) (\d+:\d+:\d+) \+0000 (\d{4})`)
@@ -465,30 +451,7 @@ func printThreadAnalysis(threadInfo []MessageThreadInfo) {
 			repliedCount++
 		}
 	}
-	fmt.Printf("\nMessages with replies: %d\n", repliedCount)
-
-	// Print example of a thread with replies
-	fmt.Printf("\nExample thread with replies:\n")
-	for threadID, messages := range threads {
-		hasReplies := false
-		for _, msg := range messages {
-			if msg.IsRepliedTo {
-				hasReplies = true
-				break
-			}
-		}
-		if hasReplies {
-			fmt.Printf("Thread %s:\n", threadID)
-			for _, msg := range messages {
-				fmt.Printf("  - %s (%s)", msg.MessageID, msg.Mailbox)
-				if msg.IsRepliedTo {
-					fmt.Printf(" [Replied to by %d messages]", len(msg.RepliedToBy))
-				}
-				fmt.Println()
-			}
-			break // Only show one example
-		}
-	}
+	fmt.Printf("\nMessages with replies: %d out of %d messages\n", repliedCount, len(threadInfo))
 }
 
 func main() {
@@ -508,7 +471,10 @@ func main() {
 	fs.StringVar(&username, "u", "", "JMAP server username")
 
 	// Parse flags
-	fs.Parse(os.Args[1:])
+	err := fs.Parse(os.Args[1:])
+	if err != nil {
+		return
+	}
 
 	// Load environment variables
 	if err := godotenv.Load(); err != nil {
@@ -665,6 +631,22 @@ func main() {
 	tarReader := tar.NewReader(gzReader)
 	messageIndex := 0
 
+	var messageBuilder strings.Builder
+
+	// Local function to handle message upload
+	uploadMessage := func(messageContent string) {
+		if messageBuilder.Len() > 0 && messageIndex < len(threadInfo) {
+			if err := jmapClient.UploadMessage(threadInfo[messageIndex], messageContent, mailboxes); err != nil {
+				fmt.Fprintf(os.Stderr, "Error uploading message %s: %v\n", threadInfo[messageIndex].MessageID, err)
+				errorCount++
+			} else {
+				uploadedCount++
+				uploadStats.TotalMessages = uploadedCount
+			}
+			messageIndex++
+		}
+	}
+
 	// Process each mbox file
 	for {
 		header, err := tarReader.Next()
@@ -680,51 +662,25 @@ func main() {
 			scanner := bufio.NewScanner(tarReader)
 			scanner.Buffer(make([]byte, 50*1024*1024), 100*1024*1024)
 
-			var messageBuilder strings.Builder
-			var inMessage bool
-
 			for scanner.Scan() {
 				line := scanner.Text()
 				if strings.HasPrefix(line, "From ") {
-					// If we were processing a message, upload it
-					if inMessage && messageBuilder.Len() > 0 {
-						if messageIndex < len(threadInfo) {
-							if err := jmapClient.UploadMessage(threadInfo[messageIndex], messageBuilder.String(), mailboxes); err != nil {
-								fmt.Fprintf(os.Stderr, "Error uploading message %s: %v\n", threadInfo[messageIndex].MessageID, err)
-								errorCount++
-							} else {
-								uploadedCount++
-								uploadStats.TotalMessages = uploadedCount
-							}
-							messageIndex++
-						}
-						messageBuilder.Reset()
-					}
-					inMessage = true
+					// Upload previous message if any
+					uploadMessage(messageBuilder.String())
+					messageBuilder.Reset()
 					continue // Skip the From line
 				}
 
-				if inMessage {
-					// Handle escaped From lines (lines starting with >From)
-					if strings.HasPrefix(line, ">From ") {
-						line = line[1:] // Remove the '>' prefix
-					}
-					messageBuilder.WriteString(line)
-					messageBuilder.WriteString("\r\n") // Use CRLF for line endings
+				// Handle escaped From lines (lines starting with >From)
+				if strings.HasPrefix(line, ">From ") {
+					line = line[1:] // Remove the '>' prefix
 				}
+				messageBuilder.WriteString(line)
+				messageBuilder.WriteString("\r\n") // Use CRLF for line endings
 			}
 
 			// Upload the last message if any
-			if inMessage && messageBuilder.Len() > 0 && messageIndex < len(threadInfo) {
-				if err := jmapClient.UploadMessage(threadInfo[messageIndex], messageBuilder.String(), mailboxes); err != nil {
-					fmt.Fprintf(os.Stderr, "Error uploading message %s: %v\n", threadInfo[messageIndex].MessageID, err)
-					errorCount++
-				} else {
-					uploadedCount++
-					uploadStats.TotalMessages = uploadedCount
-				}
-				messageIndex++
-			}
+			uploadMessage(messageBuilder.String())
 		}
 	}
 
