@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,6 +32,7 @@ type Parameters struct {
 	Username     string
 	Password     string
 	FilePath     string
+	Concurrency  int
 }
 
 type ProcessingStats struct {
@@ -483,16 +485,30 @@ func getParameters() (*Parameters, error) {
 
 	// Define command-line options
 	var limitStr string
+	var concurrencyStr string
 	op := optionparser.NewOptionParser()
 	op.On("-d", "--debug", "Enable debug mode", &params.Debug)
 	op.On("-l", "--limit LIMIT", "Limit the number of messages to process", &limitStr)
 	op.On("-j", "--jmap-url URL", "Base URL of the JMAP server", &params.JMAPURL)
 	op.On("-u", "--username USERNAME", "JMAP server username", &params.Username)
+	op.On("-c", "--concurrency N", "Number of concurrent upload requests (default: 1)", &concurrencyStr)
 
 	// Parse command line arguments
 	err := op.Parse()
 	if err != nil {
 		return nil, fmt.Errorf("error parsing options: %w", err)
+	}
+
+	// Set default concurrency if not specified
+	params.Concurrency = 1
+	if concurrencyStr != "" {
+		concurrency, err := fmt.Sscanf(concurrencyStr, "%d", &params.Concurrency)
+		if err != nil || concurrency != 1 {
+			return nil, fmt.Errorf("invalid concurrency value: %s", concurrencyStr)
+		}
+		if params.Concurrency <= 0 {
+			return nil, fmt.Errorf("concurrency must be greater than 0")
+		}
 	}
 
 	// Convert limit string to integer if provided
@@ -633,15 +649,51 @@ func main() {
 		}
 	}()
 
-	messageIndex := 0
-	uploadMessage := func(receivedDate time.Time, message string) error {
-		if messageIndex < len(threadInfo) {
-			if err := jmapClient.UploadMessage(threadInfo[messageIndex], message, mailboxes); err != nil {
-				fmt.Fprintf(os.Stderr, "Error uploading message %s: %v\n", threadInfo[messageIndex].MessageID, err)
+	// Create channels for the worker pool
+	type uploadJob struct {
+		threadInfo   MessageThreadInfo
+		message      string
+		messageIndex int
+	}
+	jobs := make(chan uploadJob, params.Concurrency*2)
+	results := make(chan error, params.Concurrency*2)
+
+	// Start worker goroutines
+	var wg sync.WaitGroup
+	for i := 0; i < params.Concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				if err := jmapClient.UploadMessage(job.threadInfo, job.message, mailboxes); err != nil {
+					fmt.Fprintf(os.Stderr, "Error uploading message %s: %v\n", job.threadInfo.MessageID, err)
+					results <- err
+				} else {
+					results <- nil
+				}
+			}
+		}()
+	}
+
+	// Start a goroutine to process results
+	go func() {
+		for err := range results {
+			if err != nil {
 				errorCount++
 			} else {
 				uploadedCount++
 				uploadStats.TotalMessages = uploadedCount
+			}
+		}
+	}()
+
+	messageIndex := 0
+	uploadMessage := func(receivedDate time.Time, message string) error {
+		if messageIndex < len(threadInfo) {
+			jobs <- uploadJob{
+				threadInfo:   threadInfo[messageIndex],
+				message:      message,
+				messageIndex: messageIndex,
 			}
 			messageIndex++
 		}
@@ -651,10 +703,15 @@ func main() {
 	// Process the archive again for uploading
 	totalMessages, err = processTakeoutArchive(params, uploadMessage)
 	if err != nil {
-		close(stopProgress) // Ensure we stop the progress reporting on error
+		close(stopProgress)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Close the jobs channel and wait for all workers to finish
+	close(jobs)
+	wg.Wait()
+	close(results)
 
 	// Stop progress reporting and wait a moment for it to finish
 	close(stopProgress)
