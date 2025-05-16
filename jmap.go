@@ -490,12 +490,12 @@ func (c *JMAPClient) EnsureRequiredMailboxes(messageHeaders []*MessageHeaders) (
 
 	// Define required mailboxes and their roles
 	requiredMailboxes := map[string]string{
-		"inbox":   "inbox",
-		"sent":    "sent",
-		"drafts":  "drafts",
-		"archive": "archive",
-		"junk":    "junk",
-		"trash":   "trash",
+		"Inbox":         "inbox",
+		"Sent Items":    "sent",
+		"Drafts":        "drafts",
+		"Archive":       "archive",
+		"Junk Mail":     "junk",
+		"Deleted Items": "trash",
 	}
 
 	// Check each required mailbox
