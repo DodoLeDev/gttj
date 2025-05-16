@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"crypto/tls"
 )
 
 // JMAPClient represents a JMAP client
@@ -22,6 +23,7 @@ type JMAPClient struct {
 	httpClient  *http.Client
 	session     *JMAPSession
 	debug       bool
+	noSSLCheck  bool
 }
 
 // JMAPSession represents a JMAP session
@@ -54,13 +56,14 @@ type JMAPMailbox struct {
 }
 
 // NewJMAPClient creates a new JMAP client
-func NewJMAPClient(baseURL string, username string, password string, debug bool) (*JMAPClient, error) {
+func NewJMAPClient(baseURL string, username string, password string, debug bool, noSSLCheck bool) (*JMAPClient, error) {
 	client := &JMAPClient{
 		baseURL:    baseURL,
 		username:   username,
 		password:   password,
 		httpClient: &http.Client{},
 		debug:      debug,
+		noSSLCheck: noSSLCheck,
 	}
 
 	// Discover JMAP endpoints and session
@@ -80,6 +83,11 @@ func (c *JMAPClient) debugLog(format string, args ...interface{}) {
 
 // doJMAPRequest performs a JMAP HTTP request with detailed logging
 func (c *JMAPClient) doJMAPRequest(method, url string, body []byte, contentType string) ([]byte, error) {
+
+	if c.noSSLCheck {
+		http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+
 	c.debugLog("JMAP Request:\n  Method: %s\n  URL: %s\n  Content-Type: %s", method, url, contentType)
 	if body != nil {
 		c.debugLog("  Request Body:\n%s", string(body))

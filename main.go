@@ -31,6 +31,7 @@ type Parameters struct {
 	JMAPURL      string
 	Username     string
 	Password     string
+	NoSSLCheck   bool
 	FilePath     string
 	Concurrency  int
 }
@@ -490,6 +491,7 @@ func getParameters() (*Parameters, error) {
 	op.On("-d", "--debug", "Enable debug mode", &params.Debug)
 	op.On("-l", "--limit LIMIT", "Limit the number of messages to process", &limitStr)
 	op.On("-j", "--jmap-url URL", "Base URL of the JMAP server", &params.JMAPURL)
+	op.On("-k", "--insecure", "Do not verify SSL certificates", &params.NoSSLCheck)
 	op.On("-u", "--username USERNAME", "JMAP server username", &params.Username)
 	op.On("-c", "--concurrency N", "Number of concurrent upload requests (default: 1)", &concurrencyStr)
 
@@ -611,7 +613,7 @@ func main() {
 
 	// Initialize JMAP client
 	fmt.Println("\nInitializing JMAP client...")
-	jmapClient, err := NewJMAPClient(params.JMAPURL, params.Username, params.Password, params.Debug)
+	jmapClient, err := NewJMAPClient(params.JMAPURL, params.Username, params.Password, params.Debug, params.NoSSLCheck)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing JMAP client: %v\n", err)
 		os.Exit(1)
