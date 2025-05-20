@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"io"
 	"net/http"
 	"strings"
@@ -191,8 +192,13 @@ func (c *JMAPClient) discoverEndpoints() error {
 }
 
 // GetMailboxes gets the list of mailboxes from the JMAP server
-func (c *JMAPClient) GetMailboxes() (map[string]JMAPMailbox, error) {
+func (c *JMAPClient) GetMailboxes(starterID string) (map[string]JMAPMailbox, error) {
 	c.debugLog("Getting mailboxes from JMAP server")
+
+	var starterIDValue = []interface{}{starterID}
+	if starterID == "" {
+		starterIDValue = nil
+	}
 
 	reqBody := struct {
 		Using       []string        `json:"using"`
@@ -204,6 +210,7 @@ func (c *JMAPClient) GetMailboxes() (map[string]JMAPMailbox, error) {
 				"Mailbox/get",
 				map[string]interface{}{
 					"accountId": c.session.PrimaryAccounts["urn:ietf:params:jmap:mail"],
+					"ids": starterIDValue,
 				},
 				"0",
 			},
@@ -248,6 +255,15 @@ func (c *JMAPClient) GetMailboxes() (map[string]JMAPMailbox, error) {
 							}
 							if parentID, ok := mailbox["parentId"].(string); ok {
 								mb.ParentID = parentID
+								parentName, error := c.GetMailboxes(parentID)
+								if error != nil {
+									fmt.Errorf("Error occurred when fetching parent: %w", err)
+								} else {
+									for key, _ := range parentName {
+										mb.Name = key + "/" + mb.Name
+										break
+									}
+								}
 							}
 							mailboxes[mb.Name] = mb
 							c.debugLog("Found mailbox: %s (ID: %s, Role: %s)", mb.Name, mb.ID, mb.Role)
@@ -387,13 +403,18 @@ func (c *JMAPClient) UploadMessage(threadInfo MessageThreadInfo, messageContent 
 }
 
 // CreateMailbox creates a new mailbox in the JMAP server
-func (c *JMAPClient) CreateMailbox(name, role string) (*JMAPMailbox, error) {
+func (c *JMAPClient) CreateMailbox(name, role string, parentID interface{}) (*JMAPMailbox, error) {
 	c.debugLog("Creating mailbox: %s (role: %s)", name, role)
 
 	// Convert empty role to null for JSON
 	var roleValue interface{} = role
 	if role == "" {
 		roleValue = nil
+	}
+
+	var parentIDValue interface{} = parentID
+	if parentID == "" {
+		parentIDValue = nil
 	}
 
 	reqBody := struct {
@@ -410,6 +431,7 @@ func (c *JMAPClient) CreateMailbox(name, role string) (*JMAPMailbox, error) {
 						"new": map[string]interface{}{
 							"name": name,
 							"role": roleValue,
+							"parentId": parentIDValue,
 						},
 					},
 				},
@@ -480,10 +502,58 @@ func (c *JMAPClient) CreateMailbox(name, role string) (*JMAPMailbox, error) {
 	return nil, fmt.Errorf("failed to extract created mailbox ID from response: %s", string(body))
 }
 
+// GenerateFolderTree ensures all the folders are created and bound to their parent folder (if any)
+func (c *JMAPClient) GenerateFolderTree(folderName string, mailboxes map[string]JMAPMailbox) string {
+	// If we are not at the root of the folderTree, fetch the parent folder ID through recursivity
+	realFolderName := folderName
+	isFolderTree := strings.Contains(folderName, "/")
+	lastSlash := -1
+	if isFolderTree {
+	    lastSlash = strings.LastIndex(folderName, "/")
+		realFolderName = folderName[lastSlash+1:]
+	}
+
+	// Check if the folder exists
+	exists := false
+	for _, mb := range mailboxes {
+		if (folderName == mb.Name) {
+			exists = true
+			return mb.ID
+		}
+	}
+
+	if !exists {
+		parentID := ""
+		parentString := ""
+		if isFolderTree {
+			parentID = c.GenerateFolderTree(folderName[:lastSlash], mailboxes)
+			parentString = " (with parent ID = " + parentID + ")"
+		}
+
+		var parentIDValue interface{} = parentID
+		if parentID == "" {
+			parentIDValue = nil
+		}
+
+		newMailbox, err := c.CreateMailbox(realFolderName, "", parentIDValue)
+		fmt.Printf("Creating folder: %s%s\n", realFolderName, parentString)
+
+		if err != nil {
+			fmt.Errorf("failed to create folder %s: %w", realFolderName, err)
+			return ""
+		}
+
+		mailboxes[folderName] = *newMailbox
+
+		return newMailbox.ID
+	}
+	return ""  // Unreachable code
+}
+
 // EnsureRequiredMailboxes ensures that all required mailboxes exist
-func (c *JMAPClient) EnsureRequiredMailboxes(messageHeaders []*MessageHeaders) (map[string]JMAPMailbox, error) {
+func (c *JMAPClient) EnsureRequiredMailboxes(messageHeaders []*MessageHeaders, reservedFolders []string) (map[string]JMAPMailbox, error) {
 	// Get existing mailboxes
-	mailboxes, err := c.GetMailboxes()
+	mailboxes, err := c.GetMailboxes("")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get existing mailboxes: %w", err)
 	}
@@ -511,7 +581,7 @@ func (c *JMAPClient) EnsureRequiredMailboxes(messageHeaders []*MessageHeaders) (
 
 		if !exists {
 			fmt.Printf("Creating missing mailbox: %s (role: %s)\n", name, role)
-			newMailbox, err := c.CreateMailbox(name, role)
+			newMailbox, err := c.CreateMailbox(name, role, "")
 			if err != nil {
 				return nil, fmt.Errorf("failed to create mailbox %s: %w", name, err)
 			}
@@ -519,8 +589,9 @@ func (c *JMAPClient) EnsureRequiredMailboxes(messageHeaders []*MessageHeaders) (
 		}
 	}
 
-	// Create mailboxes for categories found in the messages
+	// Create mailboxes for categories and folders found in the messages
 	categories := make(map[string]bool)
+	otherFolders := make(map[string]bool)
 	for _, headers := range messageHeaders {
 		for _, label := range headers.GmailLabels {
 			if strings.Contains(label, ":") {
@@ -529,6 +600,8 @@ func (c *JMAPClient) EnsureRequiredMailboxes(messageHeaders []*MessageHeaders) (
 				if len(parts) == 2 {
 					categories[parts[1]] = true
 				}
+			} else if !slices.Contains(reservedFolders, label) {
+				otherFolders[label] = true
 			}
 		}
 	}
@@ -546,12 +619,17 @@ func (c *JMAPClient) EnsureRequiredMailboxes(messageHeaders []*MessageHeaders) (
 
 		if !exists {
 			fmt.Printf("Creating category mailbox: %s\n", category)
-			newMailbox, err := c.CreateMailbox(category, "")
+			newMailbox, err := c.CreateMailbox(category, "", "")
 			if err != nil {
 				return nil, fmt.Errorf("failed to create category mailbox %s: %w", category, err)
 			}
 			mailboxes[category] = *newMailbox
 		}
+	}
+
+	// Create mailboxes for each label, while keeping arborescence
+	for folderTree := range otherFolders {
+		c.GenerateFolderTree(folderTree, mailboxes);
 	}
 
 	return mailboxes, nil

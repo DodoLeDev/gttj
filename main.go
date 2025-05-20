@@ -13,6 +13,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"maps"
+	"slices"
 
 	"github.com/joho/godotenv"
 	"github.com/shirou/gopsutil/v3/mem"
@@ -407,8 +409,8 @@ func analyzeMessageThreads(headers []*MessageHeaders, debug bool) []MessageThrea
 						info.Keywords = append(info.Keywords, parts[1])
 					}
 				} else {
-					// Not mapped, not a category, not ignored - add as keyword
-					info.Keywords = append(info.Keywords, label)
+					// Not mapped, not a category, not ignored, it's the final mailbox!!
+					info.Mailbox = label
 				}
 			}
 		}
@@ -621,7 +623,7 @@ func main() {
 
 	// Get available mailboxes
 	fmt.Println("\nQuerying available mailboxes...")
-	mailboxes, err := jmapClient.EnsureRequiredMailboxes(messageHeaders)
+	mailboxes, err := jmapClient.EnsureRequiredMailboxes(messageHeaders, slices.Concat(slices.Collect(maps.Keys(localeMap.Roles)), slices.Collect(maps.Keys(localeMap.Keywords))))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error ensuring required mailboxes: %v\n", err)
 		os.Exit(1)
