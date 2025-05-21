@@ -162,13 +162,19 @@ func processTakeoutArchive(params *Parameters, processEntity func(time.Time, str
 	}
 	defer file.Close()
 
-	gzReader, err := gzip.NewReader(file)
-	if err != nil {
-		return 0, fmt.Errorf("failed to create gzip reader: %w", err)
-	}
-	defer gzReader.Close()
+	tarReader := tar.NewReader(file)
 
-	tarReader := tar.NewReader(gzReader)
+	if strings.HasSuffix(params.FilePath, ".gz") {
+		gzReader, err := gzip.NewReader(file)
+		if err != nil {
+			return 0, fmt.Errorf("failed to create gzip reader: %w", err)
+		}
+		defer gzReader.Close()
+
+		tarReader = tar.NewReader(gzReader)
+	}
+
+
 	stats := NewProcessingStats()
 
 	// Start progress reporting in the background
