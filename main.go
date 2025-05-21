@@ -36,6 +36,7 @@ type Parameters struct {
 	NoSSLCheck   bool
 	FilePath     string
 	Concurrency  int
+	FolderTree	 bool
 }
 
 type ProcessingStats struct {
@@ -501,6 +502,7 @@ func getParameters() (*Parameters, error) {
 	op.On("-j", "--jmap-url URL", "Base URL of the JMAP server", &params.JMAPURL)
 	op.On("-k", "--insecure", "Do not verify SSL certificates", &params.NoSSLCheck)
 	op.On("-u", "--username USERNAME", "JMAP server username", &params.Username)
+	op.On("-m", "--mailbox", "Create the folder tree only", &params.FolderTree)
 	op.On("-c", "--concurrency N", "Number of concurrent upload requests (default: 1)", &concurrencyStr)
 
 	// Parse command line arguments
@@ -633,6 +635,11 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error ensuring required mailboxes: %v\n", err)
 		os.Exit(1)
+	}
+
+	if params.FolderTree {
+		fmt.Printf("Stopping here as mailbox verification has been selected\n")
+		os.Exit(0)
 	}
 
 	// Upload messages to JMAP server
