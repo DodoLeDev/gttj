@@ -456,11 +456,11 @@ func analyzeMessageThreads(headers []*MessageHeaders, params *Parameters) []Mess
 
 // printProcessingStats prints statistics about the message processing
 func printProcessingStats(totalMessages int, messageHeaders []*MessageHeaders, elapsed time.Duration) {
-	fmt.Printf("\nFirst pass complete:\n")
-	fmt.Printf("Total messages processed: %d\n", totalMessages)
-	fmt.Printf("Messages with headers: %d\n", len(messageHeaders))
-	fmt.Printf("Processing time: %.2f seconds\n", elapsed.Seconds())
-	fmt.Printf("Processing rate: %.2f messages/second\n", float64(totalMessages)/elapsed.Seconds())
+	fmt.Printf("\n\033[1;4mFirst pass complete:\033[0m\n")
+	fmt.Printf("\033[1mTotal messages processed:\033[0m %d\n", totalMessages)
+	fmt.Printf("\033[1mMessages with headers:\033[0m %d\n", len(messageHeaders))
+	fmt.Printf("\033[1mProcessing time:\033[0m %.2f seconds\n", elapsed.Seconds())
+	fmt.Printf("\033[1mProcessing rate:\033[0m %.2f messages/second\n", float64(totalMessages)/elapsed.Seconds())
 }
 
 // printThreadAnalysis prints a summary of thread information
@@ -776,9 +776,13 @@ func main() {
 	}
 
 	uploadElapsed := time.Since(uploadStart)
-	fmt.Printf("\nUpload complete:\n")
-	fmt.Printf("Successfully uploaded: %d messages\n", uploadedCount)
-	fmt.Printf("Failed uploads: %d messages\n", errorCount)
-	fmt.Printf("Upload time: %.2f seconds\n", uploadElapsed.Seconds())
-	fmt.Printf("Upload rate: %.2f messages/second\n", float64(uploadedCount)/uploadElapsed.Seconds())
+	fmt.Printf("\n\n\033[1;4mUpload complete!\033[0m\n")
+	fmt.Printf("\033[1mSuccessfully uploaded:\033[0m %d messages\n", uploadedCount)
+	if (skippedCount > 0) {
+		fmt.Printf("\033[1mSkipped:\033[0m %d messages\n", skippedCount)
+	}
+	fmt.Printf("\033[1mFailed uploads:\033[0m %d messages\n", errorCount)
+	fmt.Printf("\033[1mSuccess rate:\033[0m %.2f%%\n", float64(uploadedCount / (uploadedCount + errorCount))*100 )
+	fmt.Printf("\033[1mUpload time:\033[0m %.2f seconds\n", uploadElapsed.Seconds())
+	fmt.Printf("\033[1mUpload rate:\033[0m %.2f messages/second\n", float64(uploadedCount)/uploadElapsed.Seconds())
 }
