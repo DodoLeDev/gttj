@@ -278,9 +278,28 @@ func (c *JMAPClient) GetMailboxes(starterID string) (map[string]JMAPMailbox, err
 }
 
 // UploadMessage uploads a message to the JMAP server
-func (c *JMAPClient) UploadMessage(threadInfo MessageThreadInfo, messageContent string, mailboxes map[string]JMAPMailbox) error {
+func (c *JMAPClient) UploadMessage(threadInfo MessageThreadInfo, messageContent string, mailboxes map[string]JMAPMailbox, whitelist []string) error {
 	// Clean up messageId by removing any whitespace
 	messageId := strings.TrimSpace(threadInfo.MessageID)
+
+	// In case of whitelist, check if the message is allowed to be migrated
+	if (len(whitelist) > 0) {
+		if c.debug { fmt.Printf("[DEBUG] Checking if the message %s is in whitelist...", messageId) }
+
+		isAllowed := false
+		for _, WLentry := range whitelist {
+			if (WLentry == messageId) {
+				isAllowed = true
+				if c.debug { fmt.Printf("Allowed!\n") }
+				break
+			}
+		}
+		if !isAllowed {
+			if c.debug { fmt.Printf("Rejected!\n") }
+			return nil
+		}
+	}
+
 	c.debugLog("Processing message ID: %s", messageId)
 
 	// First, upload the message content

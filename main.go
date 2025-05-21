@@ -20,11 +20,17 @@ import (
 	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/speedata/optionparser"
 	"golang.org/x/crypto/ssh/terminal"
+	"gopkg.in/yaml.v3"
 )
 
 // Regular expression to parse From line
 // Example: From 1829804852868694154@xxx Sat Apr 19 04:44:52 +0000 2025
 var fromLineRegex = regexp.MustCompile(`From \d+@\S+ (\w+) (\w+) (\d+) (\d+:\d+:\d+) \+0000 (\d{4})`)
+
+// WhitelistMap
+type WhitelistMap struct {
+	WhitelistMails []string `yaml:"whitelist"`
+}
 
 // Parameters holds all program parameters
 type Parameters struct {
@@ -37,6 +43,7 @@ type Parameters struct {
 	FilePath     string
 	Concurrency  int
 	FolderTree	 bool
+	Whitelist	 WhitelistMap
 }
 
 type ProcessingStats struct {
@@ -300,7 +307,7 @@ type MessageThreadInfo struct {
 }
 
 // analyzeMessageThreads analyzes the message headers to determine thread relationships and reply status
-func analyzeMessageThreads(headers []*MessageHeaders, debug bool) []MessageThreadInfo {
+func analyzeMessageThreads(headers []*MessageHeaders, params *Parameters) []MessageThreadInfo {
 	// Create a map to track which messages have been replied to
 	repliedToMap := make(map[string][]string)
 
@@ -322,12 +329,12 @@ func analyzeMessageThreads(headers []*MessageHeaders, debug bool) []MessageThrea
 	}
 
 	// Get the label map and detect locale
-	labelMap, err := ReadLabelMap("label-map.yaml", debug)
+	labelMap, err := ReadLabelMap("label-map.yaml", params.Debug)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading label map: %v\n", err)
 		os.Exit(1)
 	}
-	localeMap := matchLocale(headers, debug)
+	localeMap := matchLocale(headers, params.Debug)
 	locale := localeMap.Locale
 
 	// Second pass: create thread info for each message
@@ -509,10 +516,12 @@ func getParameters() (*Parameters, error) {
 	// Define command-line options
 	var limitStr string
 	var concurrencyStr string
+	var whitelist string
 	op := optionparser.NewOptionParser()
 	op.On("-d", "--debug", "Enable debug mode", &params.Debug)
 	op.On("-l", "--limit LIMIT", "Limit the number of messages to process", &limitStr)
 	op.On("-j", "--jmap-url URL", "Base URL of the JMAP server", &params.JMAPURL)
+	op.On("-w", "--whitelist FILE", "Only upload mails whose ID is in the file FILE", &whitelist)
 	op.On("-k", "--insecure", "Do not verify SSL certificates", &params.NoSSLCheck)
 	op.On("-u", "--username USERNAME", "JMAP server username", &params.Username)
 	op.On("-m", "--mailbox", "Create the folder tree only", &params.FolderTree)
@@ -541,6 +550,18 @@ func getParameters() (*Parameters, error) {
 		limit, err := fmt.Sscanf(limitStr, "%d", &params.MessageLimit)
 		if err != nil || limit != 1 {
 			return nil, fmt.Errorf("invalid limit value: %s", limitStr)
+		}
+	}
+
+	// Fetch whitelist if provided
+	if whitelist != "" {
+		wldata, err := os.ReadFile(whitelist)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read whitelist file: %w", err)
+		}
+
+		if err := yaml.Unmarshal(wldata, &params.Whitelist); err != nil {
+			return nil, fmt.Errorf("failed to parse whitelist: %w", err)
 		}
 	}
 
@@ -622,7 +643,7 @@ func main() {
 	fmt.Printf("Detected locale: %s\n", localeMap.Locale)
 
 	// Analyze and print thread information
-	threadInfo := analyzeMessageThreads(messageHeaders, params.Debug)
+	threadInfo := analyzeMessageThreads(messageHeaders, params)
 
 	// Set the received dates in the thread info
 	for i := range threadInfo {
@@ -660,6 +681,7 @@ func main() {
 	uploadStart := time.Now()
 	uploadedCount := 0
 	errorCount := 0
+	skippedCount := 0
 
 	// Create stats for upload process
 	uploadStats := NewProcessingStats()
@@ -695,7 +717,7 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for job := range jobs {
-				if err := jmapClient.UploadMessage(job.threadInfo, job.message, mailboxes); err != nil {
+				if err := jmapClient.UploadMessage(job.threadInfo, job.message, mailboxes, params.Whitelist.WhitelistMails); err != nil {
 					fmt.Fprintf(os.Stderr, "Error uploading message %s: %v\n", job.threadInfo.MessageID, err)
 					results <- err
 				} else {
@@ -746,6 +768,12 @@ func main() {
 	// Stop progress reporting and wait a moment for it to finish
 	close(stopProgress)
 	time.Sleep(100 * time.Millisecond) // Give the goroutine time to clean up
+
+	// Process skipped messages based on whitelist size
+	if (len(params.Whitelist.WhitelistMails) > 0) {
+		skippedCount = uploadedCount - len(params.Whitelist.WhitelistMails) + errorCount
+		uploadedCount = uploadedCount - skippedCount
+	}
 
 	uploadElapsed := time.Since(uploadStart)
 	fmt.Printf("\nUpload complete:\n")
