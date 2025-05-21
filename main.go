@@ -157,6 +157,7 @@ func processMboxStream(reader io.Reader, stats *ProcessingStats, processEntity f
 }
 
 func processTakeoutArchive(params *Parameters, processEntity func(time.Time, string) error) (int, error) {
+	isPlainMboxFile := true
 	file, err := os.Open(params.FilePath)
 	if err != nil {
 		return 0, fmt.Errorf("failed to open file: %w", err)
@@ -165,16 +166,21 @@ func processTakeoutArchive(params *Parameters, processEntity func(time.Time, str
 
 	tarReader := tar.NewReader(file)
 
-	if strings.HasSuffix(params.FilePath, ".gz") {
-		gzReader, err := gzip.NewReader(file)
-		if err != nil {
-			return 0, fmt.Errorf("failed to create gzip reader: %w", err)
+	if (strings.HasSuffix(params.FilePath, ".tar") || strings.HasSuffix(params.FilePath, ".tar.gz")) {
+
+		isPlainMboxFile = false
+
+		if strings.HasSuffix(params.FilePath, ".gz") {
+			gzReader, err := gzip.NewReader(file)
+			if err != nil {
+				return 0, fmt.Errorf("failed to create gzip reader: %w", err)
+			}
+			defer gzReader.Close()
+
+			tarReader = tar.NewReader(gzReader)
 		}
-		defer gzReader.Close()
 
-		tarReader = tar.NewReader(gzReader)
 	}
-
 
 	stats := NewProcessingStats()
 
@@ -193,25 +199,32 @@ func processTakeoutArchive(params *Parameters, processEntity func(time.Time, str
 		}
 	}()
 
-	for {
-		header, err := tarReader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
+	if isPlainMboxFile {
+		if err := processMboxStream(file, stats, processEntity, params.MessageLimit, params.Debug); err != nil {
 			close(stopProgress)
-			return 0, fmt.Errorf("failed to read tar entry: %w", err)
+			return 0, fmt.Errorf("failed processing %s: %w", params.FilePath, err)
 		}
-
-		if filepath.Ext(header.Name) == ".mbox" {
-			if err := processMboxStream(tarReader, stats, processEntity, params.MessageLimit, params.Debug); err != nil {
-				close(stopProgress)
-				return 0, fmt.Errorf("failed processing %s: %w", header.Name, err)
+	} else {
+		for {
+			header, err := tarReader.Next()
+			if err == io.EOF {
+				break
 			}
-			// Check if we've hit the message limit
-			if params.MessageLimit > 0 && stats.TotalMessages >= params.MessageLimit {
+			if err != nil {
 				close(stopProgress)
-				return stats.TotalMessages, nil
+				return 0, fmt.Errorf("failed to read tar entry: %w", err)
+			}
+
+			if filepath.Ext(header.Name) == ".mbox" {
+				if err := processMboxStream(tarReader, stats, processEntity, params.MessageLimit, params.Debug); err != nil {
+					close(stopProgress)
+					return 0, fmt.Errorf("failed processing %s: %w", header.Name, err)
+				}
+				// Check if we've hit the message limit
+				if params.MessageLimit > 0 && stats.TotalMessages >= params.MessageLimit {
+					close(stopProgress)
+					return stats.TotalMessages, nil
+				}
 			}
 		}
 	}
